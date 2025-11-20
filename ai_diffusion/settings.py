@@ -198,6 +198,13 @@ class Settings(QObject):
         _("URL used to connect to a running ComfyUI server. Default is 127.0.0.1:8188 (local)."),
     )
 
+    additional_servers: list[str]
+    _additional_servers = Setting(
+        _("Additional Servers"),
+        [],
+        _("List of additional ComfyUI server URLs for load balancing. Jobs will be distributed across all servers."),
+    )
+
     server_backend: ServerBackend
     _server_backend = Setting(_("Server Backend"), ServerBackend.default())
 
