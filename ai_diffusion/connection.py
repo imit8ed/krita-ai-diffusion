@@ -7,10 +7,12 @@ import asyncio
 from .client import Client, ClientMessage, ClientEvent, DeviceInfo, SharedWorkflow, MissingResources
 from .comfy_client import ComfyClient
 from .cloud_client import CloudClient
+from .server_pool import ServerPool
 from .network import NetworkError
 from .settings import Settings, ServerMode, PerformancePreset, settings
 from .properties import Property, ObservableProperties
 from .localization import translate as _
+from .util import client_logger as log
 from . import util, eventloop
 
 
@@ -44,6 +46,7 @@ class Connection(QObject, ObservableProperties):
         super().__init__()
 
         self._client: Client | None = None
+        self._server_pool: ServerPool | None = None
         self._task: asyncio.Task | None = None
         self._workflows: dict[str, dict] = {}
         self._temporary_disconnect = False
@@ -93,11 +96,25 @@ class Connection(QObject, ObservableProperties):
                     return
                 self._client = await CloudClient.connect(CloudClient.default_api_url, access_token)
             else:
-                self._client = await ComfyClient.connect(url)
-                self.state = ConnectionState.discover_models
-                async for status in self._client.discover_models(refresh=False):
-                    self.progress = (status.current, status.total)
-                self.missing_resources = self._client.missing_resources
+                # Use ServerPool if additional servers are configured
+                if settings.additional_servers:
+                    self._server_pool = ServerPool(url, settings.additional_servers)
+                    models, device_info = await self._server_pool.connect()
+
+                    self.state = ConnectionState.discover_models
+                    async for status in self._server_pool.discover_models(refresh=False):
+                        self.progress = (status.current, status.total)
+                    self.missing_resources = self._server_pool.missing_resources
+
+                    # Create a wrapper that delegates to the server pool
+                    self._client = self._server_pool
+                else:
+                    # Single server mode (original behavior)
+                    self._client = await ComfyClient.connect(url)
+                    self.state = ConnectionState.discover_models
+                    async for status in self._client.discover_models(refresh=False):
+                        self.progress = (status.current, status.total)
+                    self.missing_resources = self._client.missing_resources
 
             apply_performance_preset(settings, self._client.device_info)
             if self._task is None:
@@ -133,6 +150,10 @@ class Connection(QObject, ObservableProperties):
             self._task.cancel()
             await self._task
             self._task = None
+
+        if self._server_pool:
+            await self._server_pool.disconnect()
+            self._server_pool = None
 
         self._client = None
         self.error = ""
@@ -232,6 +253,13 @@ class Connection(QObject, ObservableProperties):
 
         elif key == "access_token":
             self._update_state()
+
+        elif key == "additional_servers":
+            # Reconnect if additional servers list changes
+            if self.state is ConnectionState.connected:
+                log.info("Additional servers changed, reconnecting...")
+                eventloop.run(self.disconnect())
+                self.connect()
 
 
 def apply_performance_preset(settings: Settings, device: DeviceInfo):

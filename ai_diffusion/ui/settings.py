@@ -251,6 +251,32 @@ class ConnectionSettings(SettingsTab):
         server_layout.addWidget(self._connect_button)
         connection_layout.addLayout(server_layout)
 
+        # Additional servers for load balancing
+        add_header(connection_layout, Settings._additional_servers)
+        additional_servers_widget = QWidget(self._connection_widget)
+        additional_servers_layout = QVBoxLayout()
+        additional_servers_layout.setContentsMargins(0, 0, 0, 0)
+        additional_servers_widget.setLayout(additional_servers_layout)
+
+        self._additional_servers_list = QListWidget(self._connection_widget)
+        self._additional_servers_list.setMaximumHeight(100)
+        additional_servers_layout.addWidget(self._additional_servers_list)
+
+        additional_servers_buttons = QHBoxLayout()
+        self._add_server_input = QLineEdit(self._connection_widget)
+        self._add_server_input.setPlaceholderText(_("Enter server URL (e.g., 192.168.1.100:8188)"))
+        self._add_server_input.returnPressed.connect(self._add_server)  # Add on Enter key
+        self._add_server_button = QPushButton(_("Add"), self._connection_widget)
+        self._add_server_button.clicked.connect(self._add_server)
+        self._remove_server_button = QPushButton(_("Remove Selected"), self._connection_widget)
+        self._remove_server_button.clicked.connect(self._remove_server)
+        additional_servers_buttons.addWidget(self._add_server_input)
+        additional_servers_buttons.addWidget(self._add_server_button)
+        additional_servers_buttons.addWidget(self._remove_server_button)
+        additional_servers_layout.addLayout(additional_servers_buttons)
+
+        connection_layout.addWidget(additional_servers_widget)
+
         self._connection_status = QLabel(self._connection_widget)
         self._supported_workloads = QLabel(self._connection_widget)
         self._supported_workloads.setWordWrap(True)
@@ -333,10 +359,18 @@ class ConnectionSettings(SettingsTab):
     def _read(self):
         self.server_mode = settings.server_mode
         self._server_url.setText(settings.server_url)
+        self._additional_servers_list.clear()
+        for server_url in settings.additional_servers:
+            self._additional_servers_list.addItem(server_url)
 
     def _write(self):
         settings.server_mode = self.server_mode
         settings.server_url = self._server_url.text()
+        # Update additional_servers from list widget
+        servers = []
+        for i in range(self._additional_servers_list.count()):
+            servers.append(self._additional_servers_list.item(i).text())
+        settings.additional_servers = servers
 
     def _change_server_mode(self, checked: bool):
         if self._server_cloud.isChecked():
@@ -349,6 +383,24 @@ class ConnectionSettings(SettingsTab):
 
     def _connect(self):
         root.connection.connect()
+
+    def _add_server(self):
+        server_url = self._add_server_input.text().strip()
+        if server_url:
+            # Check if server is already in the list
+            for i in range(self._additional_servers_list.count()):
+                if self._additional_servers_list.item(i).text() == server_url:
+                    return  # Already exists, don't add duplicate
+            self._additional_servers_list.addItem(server_url)
+            self._add_server_input.clear()
+            self.write()
+
+    def _remove_server(self):
+        selected_items = self._additional_servers_list.selectedItems()
+        if selected_items:
+            for item in selected_items:
+                self._additional_servers_list.takeItem(self._additional_servers_list.row(item))
+            self.write()
 
     def update_server_status(self):
         connection = root.connection
