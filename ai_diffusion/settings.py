@@ -17,6 +17,7 @@ class ServerMode(Enum):
     managed = 0
     external = 1
     cloud = 2
+    cluster = 3
 
 
 class ServerBackend(Enum):
@@ -195,6 +196,13 @@ class Settings(QObject):
         _("Server URL"),
         "127.0.0.1:8188",
         _("URL used to connect to a running ComfyUI server. Default is 127.0.0.1:8188 (local)."),
+    )
+
+    server_urls: str
+    _server_urls = Setting(
+        _("Cluster URLs"),
+        "",
+        _("Comma-separated list of ComfyUI server URLs for cluster mode."),
     )
 
     server_backend: ServerBackend

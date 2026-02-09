@@ -26,6 +26,7 @@ from PyQt5.QtGui import QDesktopServices, QGuiApplication, QCursor, QFontMetrics
 
 from ..client import Client, User, MissingResources
 from ..cloud_client import CloudClient
+from ..cluster_client import ClusterClient
 from ..resources import Arch, ResourceId
 from ..settings import Settings, ServerMode, PerformancePreset, settings, ImageFileFormat
 from ..server import Server, ServerState
@@ -313,6 +314,7 @@ _server_mode_text = {
     ServerMode.cloud: _("Online Service"),
     ServerMode.managed: _("Local Managed Server"),
     ServerMode.external: _("Custom Server"),
+    ServerMode.cluster: _("GPU Cluster"),
 }
 _server_mode_status = {
     "signed_out": (_("Signed out"), grey),
@@ -400,13 +402,15 @@ class ServerModeSelect(QWidget):
         self._cloud_button = ServerModeButton(ServerMode.cloud, "signed_out", self)
         self._managed_button = ServerModeButton(ServerMode.managed, "not_installed", self)
         self._external_button = ServerModeButton(ServerMode.external, "not_connected", self)
+        self._cluster_button = ServerModeButton(ServerMode.cluster, "not_connected", self)
 
-        for button in (self._cloud_button, self._managed_button, self._external_button):
+        for button in (self._cloud_button, self._managed_button, self._external_button, self._cluster_button):
             button.toggled.connect(self._change_mode)
 
         layout.addWidget(self._cloud_button)
         layout.addWidget(self._managed_button)
         layout.addWidget(self._external_button)
+        layout.addWidget(self._cluster_button)
         layout.addStretch()
 
     def _change_mode(self, mode: ServerMode):
@@ -421,6 +425,8 @@ class ServerModeSelect(QWidget):
             return ServerMode.managed
         elif self._external_button.isChecked():
             return ServerMode.external
+        elif self._cluster_button.isChecked():
+            return ServerMode.cluster
         return ServerMode.undefined
 
     @mode.setter
@@ -428,10 +434,12 @@ class ServerModeSelect(QWidget):
         self._cloud_button.setChecked(mode is ServerMode.cloud)
         self._managed_button.setChecked(mode is ServerMode.managed)
         self._external_button.setChecked(mode is ServerMode.external)
+        self._cluster_button.setChecked(mode is ServerMode.cluster)
 
     def update_status(self, state: ConnectionState, server_state: ServerState):
         self._cloud_button.status = "signed_out"
         self._external_button.status = "not_connected"
+        self._cluster_button.status = "not_connected"
         match server_state:
             case ServerState.not_installed:
                 self._managed_button.status = "not_installed"
@@ -465,6 +473,124 @@ class ServerModeSelect(QWidget):
                 self._external_button.status = "connected"
             case ServerMode.external, ConnectionState.error, _:
                 self._external_button.status = "error"
+            case ServerMode.cluster, ConnectionState.disconnected, _:
+                self._cluster_button.status = "not_connected"
+            case ServerMode.cluster, ConnectionState.connecting, _:
+                self._cluster_button.status = "connecting"
+            case ServerMode.cluster, ConnectionState.connected, _:
+                self._cluster_button.status = "connected"
+            case ServerMode.cluster, ConnectionState.error, _:
+                self._cluster_button.status = "error"
+
+
+class ClusterWidget(QWidget):
+    """Widget for configuring cluster mode with multiple ComfyUI backends."""
+
+    value_changed = pyqtSignal()
+
+    # Fleet nodes: (display_name, hostname:port, default_enabled)
+    FLEET_NODES = [
+        ("Olympus", "olympus.tadpole-koi.ts.net:8188", True),
+        ("Atlantis", "atlantis.tadpole-koi.ts.net:8188", True),
+        ("Babylon", "babylon.tadpole-koi.ts.net:8188", True),
+        ("Delphi", "delphi.tadpole-koi.ts.net:8188", False),
+    ]
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 12, 4, 4)
+        self.setLayout(layout)
+
+        info_label = QLabel(
+            _("Select GPU nodes for cluster generation."),
+            self,
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        add_header(layout, Settings._server_urls)
+
+        # Checkbox grid for fleet nodes
+        self._node_checkboxes: list[tuple[str, QCheckBox]] = []
+        node_layout = QHBoxLayout()
+        for name, url, default_on in self.FLEET_NODES:
+            cb = QCheckBox(name, self)
+            cb.setChecked(default_on)
+            cb.stateChanged.connect(self._on_checkbox_changed)
+            node_layout.addWidget(cb)
+            self._node_checkboxes.append((url, cb))
+        layout.addLayout(node_layout)
+
+        # Connect button
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self._connect_button = QPushButton(_("Connect"), self)
+        self._connect_button.clicked.connect(self._connect)
+        btn_layout.addWidget(self._connect_button)
+        layout.addLayout(btn_layout)
+
+        self._connection_status = QLabel(self)
+        self._connection_status.setWordWrap(True)
+        layout.addWidget(self._connection_status)
+
+        self._backend_status = QLabel(self)
+        self._backend_status.setWordWrap(True)
+        self._backend_status.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._backend_status)
+
+        layout.addStretch()
+
+    def _on_checkbox_changed(self):
+        enabled = [url for url, cb in self._node_checkboxes if cb.isChecked()]
+        settings.server_urls = ", ".join(enabled)
+        self.value_changed.emit()
+
+    def _connect(self):
+        root.connection.connect()
+
+    def update_connection_state(self, state: ConnectionState):
+        self._connect_button.setEnabled(True)
+        self._backend_status.clear()
+
+        if state == ConnectionState.connected:
+            client = root.connection.client_if_connected
+            if isinstance(client, ClusterClient):
+                healthy = client.healthy_backend_count
+                total = client.backend_count
+                self._connection_status.setText(
+                    _("Connected") + f" ({healthy}/{total} backends)"
+                )
+                self._connection_status.setStyleSheet(f"color: {green}; font-weight:bold")
+                # Show per-backend status
+                info_lines = []
+                for info in client.backend_info():
+                    status_color = green if info["healthy"] else red
+                    status_text = "OK" if info["healthy"] else "DOWN"
+                    info_lines.append(
+                        f"<span style='color:{status_color}'>{status_text}</span> "
+                        f"{info['url']} - {info['device']} ({info['vram']}GB)"
+                    )
+                self._backend_status.setText("<br>".join(info_lines))
+            else:
+                self._connection_status.setText(_("Connected"))
+                self._connection_status.setStyleSheet(f"color: {green}; font-weight:bold")
+        elif state == ConnectionState.connecting:
+            self._connection_status.setText(_("Connecting to cluster..."))
+            self._connection_status.setStyleSheet(f"color: {yellow}; font-weight:bold")
+            self._connect_button.setEnabled(False)
+        elif state == ConnectionState.disconnected:
+            self._connection_status.setText(_("Disconnected"))
+            self._connection_status.setStyleSheet(f"color: {grey}; font-style:italic")
+        elif state == ConnectionState.error:
+            error = root.connection.error or "Unknown error"
+            self._connection_status.setText(f"<b>Error</b>: {error.removeprefix('Error: ')}")
+            self._connection_status.setStyleSheet(f"color: {red}; font-weight:bold")
+
+    def read_settings(self):
+        current_urls = {u.strip().lower() for u in settings.server_urls.split(",") if u.strip()}
+        for url, cb in self._node_checkboxes:
+            cb.setChecked(url.lower() in current_urls)
 
 
 class ConnectionSettings(SettingsTab):
@@ -479,11 +605,13 @@ class ConnectionSettings(SettingsTab):
         self._cloud_widget = CloudWidget(self)
         self._server_widget = ServerWidget(server, self)
         self._connection_widget = QWidget(self)
+        self._cluster_widget = ClusterWidget(self)
         self._server_stack = QStackedWidget(self)
         self._server_stack.addWidget(self._setup_widget)
         self._server_stack.addWidget(self._cloud_widget)
         self._server_stack.addWidget(self._server_widget)
         self._server_stack.addWidget(self._connection_widget)
+        self._server_stack.addWidget(self._cluster_widget)
 
         connection_layout = QVBoxLayout()
         connection_layout.setContentsMargins(0, 0, 0, 0)
@@ -543,6 +671,7 @@ class ConnectionSettings(SettingsTab):
             ServerMode.cloud: self._cloud_widget,
             ServerMode.managed: self._server_widget,
             ServerMode.external: self._connection_widget,
+            ServerMode.cluster: self._cluster_widget,
             ServerMode.undefined: self._setup_widget,
         }[mode]
         self._server_stack.setCurrentWidget(widget)
@@ -555,6 +684,7 @@ class ConnectionSettings(SettingsTab):
         self._server_mode.update_status(root.connection.state, self._server.state)
         self._update_server_mode(settings.server_mode)
         self._server_url.setText(settings.server_url)
+        self._cluster_widget.read_settings()
 
     def _write(self):
         settings.server_mode = self._server_mode.mode
@@ -571,6 +701,7 @@ class ConnectionSettings(SettingsTab):
         connection = root.connection
         self._server_mode.update_status(connection.state, self._server.state)
         self._cloud_widget.update_connection_state(connection.state)
+        self._cluster_widget.update_connection_state(connection.state)
         self._connect_button.setEnabled(True)
         if connection.state == ConnectionState.connected:
             self._connection_status.setText(_("Connected"))

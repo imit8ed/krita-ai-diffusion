@@ -8,6 +8,7 @@ import asyncio
 from .client import Client, ClientMessage, ClientEvent, DeviceInfo, SharedWorkflow, MissingResources
 from .comfy_client import ComfyClient
 from .cloud_client import CloudClient
+from .cluster_client import ClusterClient
 from .network import NetworkError
 from .settings import Settings, ServerMode, PerformancePreset, settings
 from .properties import Property, ObservableProperties
@@ -93,6 +94,10 @@ class Connection(QObject, ObservableProperties):
                     self.state = ConnectionState.auth_missing
                     return
                 self._client = await CloudClient.connect(CloudClient.default_api_url, access_token)
+            elif mode is ServerMode.cluster:
+                urls = [u.strip() for u in settings.server_urls.split(",") if u.strip()]
+                self._client = await ClusterClient.connect(urls)
+                self.missing_resources = self._client.missing_resources
             else:
                 self._client = await ComfyClient.connect(url)
                 self.state = ConnectionState.discover_models
@@ -225,8 +230,10 @@ class Connection(QObject, ObservableProperties):
     def _handle_settings_changed(self, key: str, value: object):
         if key == "server_mode":
             client_is_cloud = isinstance(self._client, CloudClient)
+            client_is_cluster = isinstance(self._client, ClusterClient)
             mode_is_cloud = settings.server_mode is ServerMode.cloud
-            if client_is_cloud != mode_is_cloud:
+            mode_is_cluster = settings.server_mode is ServerMode.cluster
+            if client_is_cloud != mode_is_cloud or client_is_cluster != mode_is_cluster:
                 self.error = ""
                 eventloop.run(self.disconnect())
             self._update_state()
