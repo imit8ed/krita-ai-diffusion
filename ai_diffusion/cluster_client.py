@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import uuid
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Iterable
 
 from .api import WorkflowInput
 from .client import (
@@ -14,7 +14,7 @@ from .client import (
     MissingResources,
 )
 from .comfy_client import ComfyClient
-from .settings import PerformanceSettings, settings
+from .settings import PerformanceSettings, settings as _settings
 from .util import client_logger as log
 
 
@@ -114,6 +114,11 @@ class ClusterClient(Client):
         backends: list[ComfyClient] = []
         errors: list[str] = []
 
+        # Temporarily disable resource checking for individual backends.
+        # We check model intersection after all backends connect.
+        saved_check = _settings.check_server_resources
+        _settings._values["check_server_resources"] = False
+
         # Connect to all backends in parallel
         async def connect_one(url: str) -> ComfyClient | None:
             try:
@@ -125,7 +130,11 @@ class ClusterClient(Client):
                 errors.append(f"{url}: {e}")
                 return None
 
-        results = await asyncio.gather(*[connect_one(url) for url in urls])
+        try:
+            results = await asyncio.gather(*[connect_one(url) for url in urls])
+        finally:
+            _settings._values["check_server_resources"] = saved_check
+
         backends = [r for r in results if r is not None]
 
         if not backends:
@@ -143,9 +152,18 @@ class ClusterClient(Client):
         client = ClusterClient(backends)
 
         # Discover models on all backends in parallel
+        # Suppress MissingResources -- we handle it at the cluster level
         async def discover_backend(backend: ComfyClient):
-            async for _status in backend.discover_models(refresh=False):
-                pass
+            try:
+                saved = _settings.check_server_resources
+                _settings._values["check_server_resources"] = False
+                try:
+                    async for _status in backend.discover_models(refresh=False):
+                        pass
+                finally:
+                    _settings._values["check_server_resources"] = saved
+            except MissingResources:
+                log.warning(f"Cluster: {backend.url} has missing resources, continuing")
 
         await asyncio.gather(*[discover_backend(b) for b in backends])
 
@@ -282,9 +300,25 @@ class ClusterClient(Client):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def clear_queue(self):
-        """Clear queues on all backends."""
-        tasks = [b.clear_queue() for b in self._backends if b.url not in self._dead_backends]
+    async def cancel(self, job_ids: Iterable[str]):
+        """Cancel specific jobs, routing to the correct backends."""
+        # Group job IDs by backend
+        backend_jobs: dict[str, list[str]] = {}
+        for local_id in job_ids:
+            if local_id in self._job_map:
+                backend, backend_id = self._job_map[local_id]
+                backend_jobs.setdefault(backend.url, []).append(backend_id)
+                self._inflight[backend.url] = max(
+                    0, self._inflight.get(backend.url, 1) - 1
+                )
+
+        # Cancel on each backend
+        tasks = []
+        for backend in self._backends:
+            if backend.url in self._dead_backends:
+                continue
+            if backend.url in backend_jobs:
+                tasks.append(backend.cancel(backend_jobs[backend.url]))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -319,9 +353,10 @@ class ClusterClient(Client):
 
     @property
     def missing_resources(self):
-        # Aggregate missing resources from all backends
-        if self._backends:
-            return self._backends[0].missing_resources
+        # Cluster mode: don't filter styles by missing resources.
+        # The fleet may not have every optional resource (inpaint models,
+        # upscalers, etc.) but should still allow generation with available
+        # checkpoints and LoRAs.
         return None
 
     @property
@@ -333,11 +368,11 @@ class ClusterClient(Client):
     @property
     def performance_settings(self):
         return PerformanceSettings(
-            batch_size=settings.batch_size,
-            resolution_multiplier=settings.resolution_multiplier,
-            max_pixel_count=settings.max_pixel_count,
-            tiled_vae=settings.tiled_vae,
-            dynamic_caching=settings.dynamic_caching,
+            batch_size=_settings.batch_size,
+            resolution_multiplier=_settings.resolution_multiplier,
+            max_pixel_count=_settings.max_pixel_count,
+            tiled_vae=_settings.tiled_vae,
+            dynamic_caching=_settings.dynamic_caching,
         )
 
     @property

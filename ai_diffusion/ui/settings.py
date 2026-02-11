@@ -490,10 +490,10 @@ class ClusterWidget(QWidget):
 
     # Fleet nodes: (display_name, hostname:port, default_enabled)
     FLEET_NODES = [
-        ("Olympus", "olympus.tadpole-koi.ts.net:8188", True),
-        ("Atlantis", "atlantis.tadpole-koi.ts.net:8188", True),
-        ("Babylon", "babylon.tadpole-koi.ts.net:8188", True),
-        ("Delphi", "delphi.tadpole-koi.ts.net:8188", False),
+        ("Olympus", "olympus:8188", True),
+        ("Atlantis", "atlantis:8188", True),
+        ("Babylon", "babylon:8188", True),
+        ("Delphi", "delphi:8188", False),
     ]
 
     def __init__(self, parent):
