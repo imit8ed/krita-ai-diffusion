@@ -1,14 +1,16 @@
 from __future__ import annotations
+
 import random
 import re
 from pathlib import Path
-from typing import Tuple, List, NamedTuple
+from typing import NamedTuple
 
 from .api import LoraInput
 from .files import FileCollection, FileSource
-from .localization import translate as _
-from .util import client_logger as log
 from .jobs import JobParams
+from .localization import translate as _
+from .util import PluginError
+from .util import client_logger as log
 
 # Functions to convert between position in Python str objects (unicode) and
 # index in QString char16 arrays (used in eg. QTextCursor).
@@ -43,12 +45,18 @@ class LoraId(NamedTuple):
         return LoraId(original, original.replace("\\", "/").removesuffix(".safetensors"))
 
 
+pattern_comment = re.compile(r"(?<!\\)#(?![0-9a-fA-F]{6}).*")
+pattern_lora = re.compile(r"<lora:([^:<>]+)(?::(-?[^:<>]*))?>", re.IGNORECASE)
+pattern_layer = re.compile(r"<layer:([^>]+)>", re.IGNORECASE)
+pattern_weight_expr = re.compile(r"\([^:()]+:(-?[\d.]+)\)")
+pattern_wildcard = re.compile(r"(\{[^{}]+\|[^{}]+\})")
+
+
 def strip_prompt_comments(prompt: str):
-    """Strip comments (text after #) from the prompt, unless the # is escaped with a backslash."""
+    """Strip comments (text after #) from the prompt, unless the # is escaped with a backslash,
+    or it's a hex color code."""
     lines = prompt.splitlines()
-    stripped_lines = [
-        re.sub(r"(?<!\\)#.*", "", line).replace(r"\#", "#").rstrip() for line in lines
-    ]
+    stripped_lines = [pattern_comment.sub("", line).replace(r"\#", "#").rstrip() for line in lines]
     return "\n".join(stripped_lines).strip()
 
 
@@ -64,11 +72,6 @@ def merge_prompt(prompt: str, style_prompt: str, language: str = ""):
     return f"{prompt}, {style_prompt}"
 
 
-_pattern_lora = re.compile(r"<lora:([^:<>]+)(?::(-?[^:<>]*))?>", re.IGNORECASE)
-_pattern_layer = re.compile(r"<layer:([^>]+)>", re.IGNORECASE)
-_pattern_wildcard = re.compile(r"(\{[^{}]+\|[^{}]+\})")
-
-
 def extract_loras(prompt: str, lora_files: FileCollection):
     loras: list[LoraInput] = []
 
@@ -80,14 +83,14 @@ def extract_loras(prompt: str, lora_files: FileCollection):
             if file.source is not FileSource.unavailable:
                 lora_filename = Path(file.id).stem.lower()
                 lora_normalized = file.name.lower()
-                if input == lora_filename or input == lora_normalized:
+                if input in (lora_filename, lora_normalized):
                     lora_file = file
                     break
 
         if not lora_file:
             error = _("LoRA not found") + f": {input}"
             log.warning(error)
-            raise Exception(error)
+            raise PluginError(error)
 
         lora_strength: float = lora_file.meta("lora_strength", 1.0)
         if match[2]:
@@ -96,12 +99,12 @@ def extract_loras(prompt: str, lora_files: FileCollection):
             except ValueError:
                 error = _("Invalid LoRA strength for") + f" {input}: {lora_strength}"
                 log.warning(error)
-                raise Exception(error)
+                raise ValueError(error)
 
         loras.append(LoraInput(lora_file.id, lora_strength))
         return ""
 
-    prompt = _pattern_lora.sub(replace, prompt)
+    prompt = pattern_lora.sub(replace, prompt)
     return prompt.strip(), loras
 
 
@@ -116,7 +119,7 @@ def extract_layers(prompt: str, replacement="Picture {}", start_index=1):
         layer_names.append(match[1])
         return replacement_text
 
-    prompt = _pattern_layer.sub(replace, prompt)
+    prompt = pattern_layer.sub(replace, prompt)
     return prompt.strip(), layer_names
 
 
@@ -130,7 +133,7 @@ def eval_wildcards(text: str, seed: int):
 
     for __ in range(10):
         prev = text
-        text = _pattern_wildcard.sub(replace, text)
+        text = pattern_wildcard.sub(replace, text)
         if text == prev:
             break
 
@@ -139,7 +142,7 @@ def eval_wildcards(text: str, seed: int):
 
 def select_current_parenthesis_block(
     text: str, cursor_pos: int, open_brackets: list[str], close_brackets: list[str]
-) -> Tuple[int, int] | None:
+) -> tuple[int, int] | None:
     """Select the current parenthesis block that the cursor points to."""
     # Ensure cursor position is within valid range
     cursor_pos = max(0, min(cursor_pos, len(text)))
@@ -169,7 +172,7 @@ def select_current_parenthesis_block(
         return None
 
 
-def select_current_word(text: str, cursor_pos: int) -> Tuple[int, int]:
+def select_current_word(text: str, cursor_pos: int) -> tuple[int, int]:
     """Select the word the cursor points to."""
     delimiters = r".,\/!?%^*;:{}=`~()<> " + "\t\r\n"
     start = end = cursor_pos
@@ -185,7 +188,7 @@ def select_current_word(text: str, cursor_pos: int) -> Tuple[int, int]:
     return start, end
 
 
-def select_on_cursor_pos(text: str, cursor_pos: int) -> Tuple[int, int]:
+def select_on_cursor_pos(text: str, cursor_pos: int) -> tuple[int, int]:
     """Return a range in the text based on the cursor_position."""
     return select_current_parenthesis_block(
         text, cursor_pos, ["(", "<"], [")", ">"]
@@ -207,7 +210,7 @@ class ExprNode:
             return f"Expr({self.children}, weight={self.weight})"
 
 
-def parse_expr(expression: str) -> List[ExprNode]:
+def parse_expr(expression: str) -> list[ExprNode]:
     """
     Parses following attention syntax language.
     expr = text | (expr:number)

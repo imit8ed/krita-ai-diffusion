@@ -1,14 +1,14 @@
-from dataclasses import Field, dataclass, field, is_dataclass, fields, MISSING
+import math
 from copy import copy
+from dataclasses import MISSING, Field, dataclass, field, fields, is_dataclass
 from enum import Enum
 from types import GenericAlias, UnionType
 from typing import Any, get_args, get_origin
-import math
 
 from .image import Bounds, Extent, Image, ImageCollection
-from .resources import ControlMode, Arch
+from .resources import Arch, ControlMode
 from .settings import ImageFileFormat
-from .util import ensure, clamp
+from .util import clamp, ensure
 
 
 class WorkflowKind(Enum):
@@ -138,6 +138,7 @@ class FillMode(Enum):
     border = 3
     replace = 4
     inpaint = 5
+    green = 6
 
 
 @dataclass
@@ -166,6 +167,14 @@ class UpscaleInput:
 
 
 @dataclass
+class CustomStyleInput:
+    models: CheckpointInput
+    sampling: SamplingInput
+    positive_prompt: str
+    negative_prompt: str
+
+
+@dataclass
 class CustomWorkflowInput:
     workflow: dict
     params: dict[str, Any]
@@ -187,6 +196,7 @@ class WorkflowInput:
     upscale: UpscaleInput | None = None
     control_mode: ControlMode = ControlMode.reference
     batch_count: int = 1
+    color_match: float = 0.0
     nsfw_filter: float = 0.0
     custom_workflow: CustomWorkflowInput | None = None
 
@@ -217,6 +227,15 @@ class WorkflowInput:
         if self.crop_upscale_extent:
             return Extent.largest(self.extent.initial, self.crop_upscale_extent)
         return self.extent.desired
+
+    @property
+    def merged_prompt(self):
+        if not self.conditioning:
+            return ""
+        prompt = self.conditioning.style + " " + self.conditioning.positive
+        for region in self.conditioning.regions:
+            prompt += "\n" + region.positive
+        return prompt
 
     @property
     def passes_count(self):

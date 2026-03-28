@@ -1,17 +1,19 @@
 from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Sequence
 from enum import Enum
 from itertools import chain
-import json
-import hashlib
 from pathlib import Path
-from typing import Any, NamedTuple, Sequence
+from typing import Any, NamedTuple
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.47.0"
+version = "1.49.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "cb459573c8fa025bbf9ecf312f6af376d659f567"
+comfy_version = "a11f68dd3b5393b6afc37e01c91fa84963d2668a"
 
 
 class CustomNode(NamedTuple):
@@ -41,15 +43,20 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "2d395424eaaa9a06a794906f8e8d325f4c850376",
+        "7fc3df11749d9c6cbe36cc36eefb652c9ff33099",
         ["ETN_LoadImageCache", "ETN_SaveImageCache", "ETN_Translate"],
     ),
     CustomNode(
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
-        "b02942210daad35db71f654038cebd541e81fe17",
-        ["INPAINT_LoadFooocusInpaint", "INPAINT_ShrinkMask", "INPAINT_StabilizeMask"],
+        "d74ecec6c377073a6885697f07a019d050f0d545",
+        [
+            "INPAINT_LoadFooocusInpaint",
+            "INPAINT_ShrinkMask",
+            "INPAINT_StabilizeMask",
+            "INPAINT_ColorMatch",
+        ],
     ),
 ]
 
@@ -106,7 +113,7 @@ class Arch(Enum):
             return Arch.sd3
         if string == "flux" and "kontext" in filename:
             return Arch.flux_k
-        if string == "flux" or string == "flux-schnell":
+        if string in {"flux", "flux-schnell"}:
             return Arch.flux
         if string == "flux2_4b" or (string == "flux2" and model_type == "klein-4b"):
             return Arch.flux2_4b
@@ -127,7 +134,7 @@ class Arch(Enum):
             return Arch.qwen_l
         if string == "qwen-image":
             return Arch.qwen
-        if string == "z-image" or string == "zimage":
+        if string in {"z-image", "zimage"}:
             return Arch.zimage
         return None
 
@@ -164,7 +171,7 @@ class Arch(Enum):
 
     @property
     def has_controlnet_inpaint(self):
-        return self in (Arch.sd15, Arch.flux, Arch.zimage)
+        return self in (Arch.sd15, Arch.flux, Arch.zimage, Arch.qwen)
 
     @property
     def supports_regions(self):
@@ -358,7 +365,7 @@ class ControlMode(Enum):
 
     def can_substitute_universal(self, arch: Arch):
         """True if this control mode is covered by univeral control-net."""
-        if arch.is_sdxl_like:
+        if arch.is_sdxl_like or arch is Arch.qwen:
             return self in [
                 ControlMode.scribble,
                 ControlMode.line_art,
@@ -383,6 +390,7 @@ class ControlMode(Enum):
         if arch is Arch.zimage:
             return self in [
                 ControlMode.inpaint,
+                ControlMode.scribble,
                 ControlMode.soft_edge,
                 ControlMode.canny_edge,
                 ControlMode.depth,
@@ -710,10 +718,12 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.inpaint): ["control_v11p_sd15_inpaint"],
     resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.inpaint): ["flux.1-dev-controlnet-inpaint"],
     resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.inpaint): ["noobaiinpainting"],
+    resource_id(ResourceKind.controlnet, Arch.qwen, ControlMode.inpaint): ["qwen-image-instantx-controlnet-inpainting"],
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.universal): ["union-sdxl", "xinsirunion"],
     resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.universal): ["union-sdxl", "xinsirunion"],
     resource_id(ResourceKind.controlnet, Arch.illu_v, ControlMode.universal): ["union-sdxl", "xinsirunion"],
     resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.universal): ["flux.1-dev-controlnet-union-pro-2.0", "flux.1-dev-controlnet-union-pro", "flux.1-dev-controlnet-union", "flux1devcontrolnetunion"],
+    resource_id(ResourceKind.controlnet, Arch.qwen, ControlMode.universal): ["qwen-image-instantx-controlnet-union"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.scribble): ["control_v11p_sd15_scribble", "control_lora_rank128_v11p_sd15_scribble"],
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.scribble): ["xinsirscribble", "scribble-sdxl", "mistoline_fp16", "mistoline_rank", "control-lora-sketch-rank", "sai_xl_sketch_"],
     resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.scribble): ["noob-sdxl-controlnet-scribble_pidinet", "noobaixlcontrolnet_epsscribble", "noob-sdxl-controlnet-scribble"],
@@ -769,6 +779,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.lora, Arch.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl_lora", "ip-adapter-faceid_sdxl_lora"],
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.depth): ["flux1-depth"],
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.canny_edge): ["flux1-canny"],
+    resource_id(ResourceKind.lora, Arch.flux2_4b, ControlMode.inpaint): ["flux-2-klein-4B-outpaint-lora", "4b-outpaint-lora", "LyNiaZ53Tudg0J6sT8Xbx"],
     resource_id(ResourceKind.model_patch, Arch.zimage, ControlMode.universal): ["z-image-turbo-fun-controlnet-union-2.1", "z-image-turbo-fun-controlnet-union"],
     resource_id(ResourceKind.model_patch, Arch.zimage, ControlMode.blur): ["z-image-turbo-fun-controlnet-tile-2.1", "z-image-turbo-fun-controlnet-tile"],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.default): [UpscalerName.default.value],
@@ -802,7 +813,7 @@ search_paths: dict[str, list[str]] = {
 }
 # fmt: on
 
-required_resource_ids = set([
+required_resource_ids = {
     ResourceId(ResourceKind.text_encoder, Arch.sd3, "clip_l"),
     ResourceId(ResourceKind.text_encoder, Arch.sd3, "clip_g"),
     ResourceId(ResourceKind.text_encoder, Arch.qwen, "qwen"),
@@ -821,8 +832,6 @@ required_resource_ids = set([
     ResourceId(ResourceKind.lora, Arch.sdxl, "hyper"),
     ResourceId(ResourceKind.upscaler, Arch.all, UpscalerName.default),
     ResourceId(ResourceKind.upscaler, Arch.all, UpscalerName.fast_2x),
-    ResourceId(ResourceKind.upscaler, Arch.all, UpscalerName.fast_3x),
-    ResourceId(ResourceKind.upscaler, Arch.all, UpscalerName.fast_4x),
     ResourceId(ResourceKind.inpaint, Arch.sdxl, "fooocus_head"),
     ResourceId(ResourceKind.inpaint, Arch.sdxl, "fooocus_patch"),
     ResourceId(ResourceKind.inpaint, Arch.all, "default"),
@@ -832,7 +841,7 @@ required_resource_ids = set([
     ResourceId(ResourceKind.vae, Arch.zimage, "default"),
     ResourceId(ResourceKind.vae, Arch.flux2_4b, "default"),
     ResourceId(ResourceKind.vae, Arch.flux2_9b, "default"),
-])
+}
 
 recommended_resource_ids = [
     ResourceId(ResourceKind.controlnet, Arch.sd15, ControlMode.scribble),
