@@ -1,11 +1,11 @@
 # Krita AI Diffusion (Cluster Fork) -- Current State
 
-> Last updated: 2026-03-29
-> Last session: `krita-cluster-merge-setup`
+> Last updated: 2026-04-23
+> Last session: `dev cleanup audit execution`
 
 ## Where Things Stand
 
-The `imit8ed/krita-ai-diffusion` fork is merged to upstream 1.49.0 with cluster mode preserved. It is symlinked into Krita's pykrita directory on sparta, with submodules initialized and pycache cleared. The plugin should load on next Krita launch, but cluster mode has not yet been verified against live fleet backends.
+The `imit8ed/krita-ai-diffusion` fork is merged to upstream 1.49.0 with cluster mode preserved. It is symlinked into Krita's pykrita directory on alexandria, with submodules initialized and pycache cleared. The plugin should load on next Krita launch, but cluster mode has not yet been verified against live fleet backends.
 
 ### Completed
 - Merged upstream/main (1.49.0) into fork -- 20 commits, 2 import conflicts resolved
@@ -18,7 +18,6 @@ The `imit8ed/krita-ai-diffusion` fork is merged to upstream 1.49.0 with cluster 
 
 ### Not Yet Done
 - Verify cluster mode works in Krita (connect to fleet backends)
-- Push merge commit to origin (`imit8ed/krita-ai-diffusion`)
 - Studio integration Phase 1: Krita export endpoint
 - ComfyUI artifact filtering for inpaint debris
 
